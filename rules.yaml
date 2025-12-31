@@ -1,0 +1,280 @@
+# LSPTracer Rules Configuration
+# Format:
+# - name: "Display Name" (Optional, auto-generated if empty)
+#   vuln_type: "Vulnerability Category"
+#   desc: "Description"
+#   severity: "High/Medium/Low"
+#   class_name: "Fully.Qualified.Class.Name"
+#   method_name: "mehtodName" (Use <init> for constructors)
+#   skip_safe: true/false (Skip if argument is a constant string)
+#   is_static: true/false (If true, caller variable MUST match class name)
+
+# # ================= RCE (Remote Code Execution) =================
+# - vuln_type: "RCE"
+#   desc: "任意代码执行漏洞"
+#   severity: "High"
+#   class_name: "java.lang.Runtime"
+#   method_name: "exec"
+#   skip_safe: true
+#   is_static: false
+
+# - vuln_type: "RCE"
+#   class_name: "java.lang.ProcessBuilder"
+#   method_name: "start"
+#   skip_safe: false
+#   is_static: false
+
+# - vuln_type: "RCE"
+#   class_name: "java.lang.ProcessBuilder"
+#   method_name: "<init>"
+#   skip_safe: true
+#   is_static: false
+
+# - vuln_type: "RCE"
+#   class_name: "javax.script.ScriptEngine"
+#   method_name: "eval"
+#   skip_safe: true
+#   is_static: false
+
+# - vuln_type: "RCE"
+#   class_name: "groovy.lang.GroovyShell"
+#   method_name: "evaluate"
+#   skip_safe: true
+#   is_static: false
+
+# - vuln_type: "RCE"
+#   class_name: "org.codehaus.groovy.runtime.InvokerHelper"
+#   method_name: "runScript"
+#   skip_safe: true
+#   is_static: true
+
+# # ================= UNSERIALIZE =================
+# - vuln_type: "UNSERIALIZE"
+#   desc: "反序列化漏洞"
+#   severity: "High"
+#   class_name: "java.io.ObjectInputStream"
+#   method_name: "readObject"
+#   skip_safe: false
+#   is_static: false
+
+# - vuln_type: "UNSERIALIZE"
+#   class_name: "org.yaml.snakeyaml.Yaml"
+#   method_name: "load"
+#   skip_safe: false
+#   is_static: false
+
+# - vuln_type: "UNSERIALIZE"
+#   class_name: "com.thoughtworks.xstream.XStream"
+#   method_name: "fromXML"
+#   skip_safe: false
+#   is_static: false
+
+# - vuln_type: "UNSERIALIZE"
+#   class_name: "com.alibaba.fastjson.JSON"
+#   method_name: "parseObject"
+#   skip_safe: false
+#   is_static: true
+
+# ================= SSRF =================
+- vuln_type: "SSRF"
+  desc: "服务端请求伪造漏洞"
+  severity: "Medium"
+  class_name: "java.net.URL"
+  method_name: "openConnection"
+  skip_safe: false
+  is_static: false
+
+- vuln_type: "SSRF"
+  class_name: "java.net.URL"
+  method_name: "openStream"
+  skip_safe: false
+  is_static: false
+
+- vuln_type: "SSRF"
+  class_name: "org.apache.http.client.HttpClient"
+  method_name: "execute"
+  skip_safe: true
+  is_static: false
+
+- vuln_type: "SSRF"
+  class_name: "org.apache.http.impl.client.CloseableHttpClient"
+  method_name: "execute"
+  skip_safe: true
+  is_static: false
+
+- vuln_type: "SSRF"
+  class_name: "okhttp3.OkHttpClient"
+  method_name: "newCall"
+  skip_safe: true
+  is_static: false
+
+- vuln_type: "SSRF"
+  class_name: "org.springframework.web.client.RestTemplate"
+  method_name: "exchange"
+  skip_safe: true
+  is_static: false
+
+- vuln_type: "SSRF"
+  class_name: "org.springframework.web.client.RestTemplate"
+  method_name: "getForObject"
+  skip_safe: true
+  is_static: false
+
+# # ================= SQLI (SQL Injection) =================
+# - vuln_type: "SQLI"
+#   desc: "SQL注入漏洞"
+#   severity: "High"
+#   class_name: "java.sql.Statement"
+#   method_name: "execute"
+#   skip_safe: true
+#   is_static: false
+
+# - vuln_type: "SQLI"
+#   class_name: "java.sql.Statement"
+#   method_name: "executeQuery"
+#   skip_safe: true
+#   is_static: false
+
+# - vuln_type: "SQLI"
+#   class_name: "java.sql.Statement"
+#   method_name: "executeUpdate"
+#   skip_safe: true
+#   is_static: false
+
+# - vuln_type: "SQLI"
+#   class_name: "java.sql.Connection"
+#   method_name: "prepareStatement"
+#   skip_safe: true
+#   is_static: false
+
+# - vuln_type: "SQLI"
+#   class_name: "org.mybatis.spring.SqlSessionTemplate"
+#   method_name: "selectOne"
+#   skip_safe: true
+#   is_static: false
+
+# - vuln_type: "SQLI"
+#   class_name: "org.mybatis.spring.SqlSessionTemplate"
+#   method_name: "selectList"
+#   skip_safe: true
+#   is_static: false
+
+# - vuln_type: "SQLI"
+#   class_name: "javax.persistence.EntityManager"
+#   method_name: "createNativeQuery"
+#   skip_safe: true
+#   is_static: false
+
+# - vuln_type: "SQLI"
+#   class_name: "com.jfinal.plugin.activerecord.Db"
+#   method_name: "find"
+#   skip_safe: true
+#   is_static: true
+
+# # ================= XSS (Cross Site Scripting) =================
+# - vuln_type: "XSS"
+#   desc: "跨站脚本漏洞"
+#   severity: "Medium"
+#   class_name: "java.io.PrintWriter"
+#   method_name: "write"
+#   skip_safe: true
+#   is_static: false
+
+# - vuln_type: "XSS"
+#   class_name: "java.io.PrintWriter"
+#   method_name: "print"
+#   skip_safe: true
+#   is_static: false
+
+# - vuln_type: "XSS"
+#   class_name: "javax.servlet.jsp.JspWriter"
+#   method_name: "print"
+#   skip_safe: true
+#   is_static: false
+
+# - vuln_type: "XSS"
+#   class_name: "javax.servlet.jsp.JspWriter"
+#   method_name: "write"
+#   skip_safe: true
+#   is_static: false
+
+# - vuln_type: "XSS"
+#   class_name: "org.springframework.web.servlet.ModelAndView"
+#   method_name: "addObject"
+#   skip_safe: true
+#   is_static: false
+
+# - vuln_type: "XSS"
+#   class_name: "org.springframework.web.servlet.ModelMap"
+#   method_name: "addAttribute"
+#   skip_safe: true
+#   is_static: false
+
+# # ================= PATH_TRAVERSAL =================
+# - vuln_type: "PATH_TRAVERSAL"
+#   desc: "路径遍历漏洞"
+#   severity: "Medium"
+#   class_name: "java.nio.file.Files"
+#   method_name: "newInputStream"
+#   skip_safe: true
+#   is_static: true
+
+# - vuln_type: "PATH_TRAVERSAL"
+#   class_name: "java.nio.file.Files"
+#   method_name: "write"
+#   skip_safe: true
+#   is_static: true
+
+# - vuln_type: "PATH_TRAVERSAL"
+#   class_name: "org.apache.commons.io.FileUtils"
+#   method_name: "openInputStream"
+#   skip_safe: true
+#   is_static: true
+
+# - vuln_type: "PATH_TRAVERSAL"
+#   class_name: "org.springframework.util.FileCopyUtils"
+#   method_name: "copy"
+#   skip_safe: true
+#   is_static: true
+
+# - vuln_type: "PATH_TRAVERSAL"
+#   class_name: "java.io.FileInputStream"
+#   method_name: "<init>"
+#   skip_safe: true
+#   is_static: false
+
+# # ================= XXE =================
+# - vuln_type: "XXE"
+#   desc: "XML外部实体注入"
+#   severity: "High"
+#   class_name: "javax.xml.parsers.DocumentBuilder"
+#   method_name: "parse"
+#   skip_safe: true
+#   is_static: false
+
+# - vuln_type: "XXE"
+#   class_name: "javax.xml.parsers.SAXParser"
+#   method_name: "parse"
+#   skip_safe: true
+#   is_static: false
+
+# - vuln_type: "XXE"
+#   class_name: "org.dom4j.io.SAXReader"
+#   method_name: "read"
+#   skip_safe: true
+#   is_static: false
+
+# ================= REDIRECT =================
+# - vuln_type: "REDIRECT"
+#   desc: "URL重定向"
+#   severity: "Medium"
+#   class_name: "javax.servlet.http.HttpServletResponse"
+#   method_name: "sendRedirect"
+#   skip_safe: true
+#   is_static: false
+
+# - vuln_type: "REDIRECT"
+#   class_name: "org.springframework.web.servlet.view.RedirectView"
+#   method_name: "<init>"
+#   skip_safe: true
+#   is_static: false
