@@ -77,7 +77,10 @@ func (t *Tracer) ScanAndTrace(rules []model.SinkRule) {
 				firstStep.Func = funcName
 				t.TraceChain(cand.File, fLine, fCol, []model.ChainStep{firstStep})
 			} else {
-				t.Results = append(t.Results, []model.ChainStep{firstStep})
+				// FIX: Route through RecordResult to enforce Strict Mode check
+				// (Previously: t.Results = append(t.Results, []model.ChainStep{firstStep}))
+				// Even for orphan sinks, we must pass them through RecordResult validation.
+				t.RecordResult([]model.ChainStep{firstStep})
 			}
 		}
 	}
