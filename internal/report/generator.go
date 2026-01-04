@@ -274,6 +274,17 @@ func getSmartCodeContext(path string, targetLine int, funcName string) string {
 		endLine = findFunctionEnd(lines, startLine)
 	}
 
+	// Double Check: Ensure the Found Range covers the Target Line
+	if startLine != -1 && endLine != -1 {
+		if targetLine < startLine || targetLine > endLine {
+			// The found function definition is NOT enclosing the target line.
+			// This happens if we matched a wrong method name or an inner class method that ends before our line.
+			// Discard and fallback to default window.
+			startLine = -1
+			endLine = -1
+		}
+	}
+
 	// 2. 兜底策略：如果没找到完整的函数块，或者提取失败，使用固定窗口
 	// (避免之前 findFunctionEnd 从中间开始导致只提取了内部 if 块的问题)
 	if startLine == -1 || endLine == -1 {
@@ -325,8 +336,18 @@ func findFunctionStart(lines []string, targetIdx int, funcName string) int {
 		line := strings.TrimSpace(lines[i])
 
 		// 1. 必须包含函数名和左括号
-		if !strings.Contains(line, funcName) || !strings.Contains(line, "(") {
+		idx := strings.Index(line, funcName)
+		if idx == -1 || !strings.Contains(line, "(") {
 			continue
+		}
+
+		// 1.1 Strict Word Boundary Check (Left)
+		// 防止匹配 substring (e.g. searching "Print" but matched "fingerPrint")
+		if idx > 0 {
+			prevChar := line[idx-1]
+			if isAlphaNum(prevChar) {
+				continue
+			}
 		}
 
 		// 2. heuristic: 如果行尾是分号，通常是调用语句，不是定义
@@ -336,7 +357,9 @@ func findFunctionStart(lines []string, targetIdx int, funcName string) int {
 		}
 
 		// 3. heuristic: 如果函数名前面是点 (e.g. obj.method(...)), 认为是调用
-		idx := strings.Index(line, funcName)
+		// 3. heuristic: 如果函数名前面是点 (e.g. obj.method(...)), 认为是调用
+		// idx matches from above
+
 		if idx > 0 && line[idx-1] == '.' {
 			continue
 		}
@@ -530,4 +553,8 @@ func fastLexer(code string) string {
 	}
 
 	return buf.String()
+}
+
+func isAlphaNum(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '$'
 }
