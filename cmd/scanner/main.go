@@ -273,7 +273,7 @@ func main() {
 		color.Cyan("[*] Analyzing Sink at Line %d", targetLine)
 
 		targetLineIndex := targetLine - 1
-		funcName, funcLine, funcCol := tracer.GetEnclosingFunction(lsp.ToUri(anchorFile), targetLineIndex)
+		funcName, funcLine, _, funcCol := tracer.GetEnclosingFunction(lsp.ToUri(anchorFile), targetLineIndex)
 
 		if funcName != "" {
 			color.Green("[+] Hit Initial Function: %s (Line:%d)", funcName, funcLine+1)

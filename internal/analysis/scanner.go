@@ -67,7 +67,7 @@ func (t *Tracer) ScanAndTrace(rules []model.SinkRule) {
 			}
 
 			// Get Enclosing Function Name FIRST
-			funcName, fLine, fCol := t.GetEnclosingFunction(lsp.ToUri(cand.File), cand.Line)
+			funcName, fLine, _, fCol := t.GetEnclosingFunction(lsp.ToUri(cand.File), cand.Line)
 
 			// Analyze Variable Definition using Enclosing Function Name
 			analysisRes := AnalyzeCallSite(cand.File, cand.Line, funcName)

@@ -129,7 +129,7 @@ func (t *Tracer) WaitForReady(uri string) {
 	})
 }
 
-func (t *Tracer) GetEnclosingFunction(uri string, line int) (string, int, int) {
+func (t *Tracer) GetEnclosingFunction(uri string, line int) (string, int, int, int) {
 	var symbols []lsp.DocumentSymbol
 	normPath := lsp.NormalizePath(lsp.FromUri(uri))
 
@@ -141,7 +141,7 @@ func (t *Tracer) GetEnclosingFunction(uri string, line int) (string, int, int) {
 		})
 		raw, err := t.Client.WaitForResult(id, 3*time.Second)
 		if err != nil {
-			return "", 0, 0
+			return "", 0, 0, 0
 		}
 		json.Unmarshal(raw, &symbols)
 		t.SymbolCache[normPath] = symbols
@@ -149,6 +149,7 @@ func (t *Tracer) GetEnclosingFunction(uri string, line int) (string, int, int) {
 
 	var foundName string
 	var foundLine int
+	var foundEndLine int
 	var foundCol int
 
 	var walk func([]lsp.DocumentSymbol)
@@ -158,6 +159,7 @@ func (t *Tracer) GetEnclosingFunction(uri string, line int) (string, int, int) {
 				if node.Kind == 6 || node.Kind == 12 {
 					foundName = node.Name
 					foundLine = node.SelectionRange.Start.Line
+					foundEndLine = node.Range.End.Line
 					foundCol = node.SelectionRange.Start.Character
 				}
 				if len(node.Children) > 0 {
@@ -167,7 +169,7 @@ func (t *Tracer) GetEnclosingFunction(uri string, line int) (string, int, int) {
 		}
 	}
 	walk(symbols)
-	return foundName, foundLine, foundCol
+	return foundName, foundLine, foundEndLine, foundCol
 }
 
 func (t *Tracer) isFrameworkEntry(file string, line int) bool {
@@ -277,7 +279,7 @@ func (t *Tracer) TraceChain(file string, line int, col int, stack []model.ChainS
 		t.Visited[key] = true
 
 		// 1. 获取包围函数 (Enclosing Function) - 必须先获取，用于参数分析
-		funcName, funcLine, funcCol := t.GetEnclosingFunction(ref.Uri, callerLine)
+		funcName, funcLine, _, funcCol := t.GetEnclosingFunction(ref.Uri, callerLine)
 		if funcName == "" {
 			funcName = "Global/Anonymous"
 		}
@@ -313,6 +315,14 @@ func (t *Tracer) RecordResult(stack []model.ChainStep) {
 			// Skip logging to avoid noise, or log debug
 			// fmt.Printf("\r    [Strict] Skipped chain ending at %s (Not an Entry Point)\n", sourceStep.Func)
 			return
+		}
+
+		// ✨ Check for Implicit Inputs (aka 0-arg method check) ✨
+		funcName, startLine, endLine, _ := t.GetEnclosingFunction(lsp.ToUri(sourceStep.File), sourceStep.Line)
+		if funcName != "" {
+			if !t.checkSourceValidity(sourceStep.File, startLine, endLine) {
+				return
+			}
 		}
 	}
 
@@ -386,4 +396,69 @@ func (t *Tracer) RecordResult(stack []model.ChainStep) {
 	}
 	fmt.Println(strings.Repeat(faint("-"), 60))
 	fmt.Println()
+}
+
+func (t *Tracer) checkSourceValidity(file string, startLine, endLine int) bool {
+	f, err := os.Open(file)
+	if err != nil {
+		return true // Fail open
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	var lines []string
+	curr := 0
+	for scanner.Scan() {
+		if curr >= startLine && curr <= endLine {
+			lines = append(lines, scanner.Text())
+		}
+		curr++
+	}
+
+	// 1. Check Parameters (Heuristic: signature has non-whitespace args)
+	signature := ""
+	bodyStartIndex := 0
+	for i, line := range lines {
+		signature += line + " "
+		if strings.Contains(line, "{") {
+			bodyStartIndex = i
+			break
+		}
+	}
+
+	argStart := strings.Index(signature, "(")
+	argEnd := strings.LastIndex(signature, ")")
+
+	hasParams := false
+	if argStart != -1 && argEnd > argStart {
+		args := strings.TrimSpace(signature[argStart+1 : argEnd])
+		if len(args) > 0 {
+			hasParams = true
+		}
+	}
+
+	if hasParams {
+		return true
+	}
+
+	// 2. Check Implicit Inputs in Body
+	implicitKeywords := []string{
+		"RequestContextHolder",
+		"ServletRequestAttributes",
+		"HttpServletRequest",
+		"SecurityContextHolder",
+		"request.getParameter",
+		"request.getHeader",
+		"request.getCookie",
+		"MultipartHttpServletRequest",
+	}
+
+	fullBody := strings.Join(lines[bodyStartIndex:], "\n")
+	for _, kw := range implicitKeywords {
+		if strings.Contains(fullBody, kw) {
+			return true
+		}
+	}
+
+	return false
 }
