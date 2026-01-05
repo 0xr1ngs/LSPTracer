@@ -307,6 +307,7 @@ func (t *Tracer) RecordResult(stack []model.ChainStep) {
 	// Strict Mode Check
 	if t.StrictMode && len(stack) > 0 {
 		sourceStep := stack[len(stack)-1]
+
 		// Create a synthetic "Source" check: must be a framework entry point
 		if !t.isFrameworkEntry(sourceStep.File, sourceStep.Line) {
 			// Skip logging to avoid noise, or log debug
@@ -315,9 +316,11 @@ func (t *Tracer) RecordResult(stack []model.ChainStep) {
 		}
 	}
 
-	// 1. 直接存入结果集 (保存绝对路径！确保后续生成报告时能找到文件)
-	// 不要在这里转相对路径，否则 generator.go 读不到文件
-	t.Results = append(t.Results, stack)
+	// 1. Valid Chain found. Store a COPY of the stack to prevent aliasing issues
+	// because the underlying array might be modified by the caller's loop.
+	finalStack := make([]model.ChainStep, len(stack))
+	copy(finalStack, stack)
+	t.Results = append(t.Results, finalStack)
 
 	// 2. 准备颜色工具
 	boldRed := color.New(color.FgRed, color.Bold).SprintFunc()
