@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"LSPTracer/internal/lsp"
@@ -16,10 +17,14 @@ import (
 )
 
 type Tracer struct {
-	Client        *lsp.Client
-	ProjectRoot   string
-	SymbolCache   map[string][]lsp.DocumentSymbol
-	Visited       map[string]bool
+	Client      *lsp.Client
+	ProjectRoot string
+	SymbolCache map[string][]lsp.DocumentSymbol
+	// Concurrency Control
+	mu  sync.RWMutex
+	Sem chan struct{}
+	Wg  sync.WaitGroup
+
 	ReportedEntry map[string]bool
 	Results       [][]model.ChainStep
 	StrictMode    bool
@@ -30,10 +35,10 @@ func NewTracer(client *lsp.Client, root string) *Tracer {
 		Client:        client,
 		ProjectRoot:   root,
 		SymbolCache:   make(map[string][]lsp.DocumentSymbol),
-		Visited:       make(map[string]bool),
 		ReportedEntry: make(map[string]bool),
 		Results:       make([][]model.ChainStep, 0),
-		StrictMode:    false, // Default to false
+		StrictMode:    false,
+		Sem:           make(chan struct{}, 20), // Limit to 20 concurrent tasks
 	}
 }
 
@@ -133,7 +138,12 @@ func (t *Tracer) GetEnclosingFunction(uri string, line int) (string, int, int, i
 	var symbols []lsp.DocumentSymbol
 	normPath := lsp.NormalizePath(lsp.FromUri(uri))
 
-	if cached, ok := t.SymbolCache[normPath]; ok {
+	// Read Lock for Cache Check
+	t.mu.RLock()
+	cached, ok := t.SymbolCache[normPath]
+	t.mu.RUnlock()
+
+	if ok {
 		symbols = cached
 	} else {
 		id := t.Client.SendRequest("textDocument/documentSymbol", map[string]interface{}{
@@ -144,7 +154,11 @@ func (t *Tracer) GetEnclosingFunction(uri string, line int) (string, int, int, i
 			return "", 0, 0, 0
 		}
 		json.Unmarshal(raw, &symbols)
+
+		// Write Lock for Cache Update
+		t.mu.Lock()
 		t.SymbolCache[normPath] = symbols
+		t.mu.Unlock()
 	}
 
 	var foundName string
@@ -223,7 +237,7 @@ func (t *Tracer) isFrameworkEntry(file string, line int) bool {
 	return false
 }
 
-func (t *Tracer) TraceChain(file string, line int, col int, stack []model.ChainStep) {
+func (t *Tracer) TraceChain(file string, line, col int, stack []model.ChainStep, visited map[string]bool) {
 	if t.isFrameworkEntry(file, line) {
 		t.RecordResult(stack)
 		return
@@ -273,35 +287,54 @@ func (t *Tracer) TraceChain(file string, line int, col int, stack []model.ChainS
 		callerLine := ref.Range.Start.Line
 
 		key := fmt.Sprintf("%s:%d", callerPath, callerLine)
-		if t.Visited[key] {
+
+		// Context-Sensitive Visited Check
+		if visited[key] {
 			continue
 		}
-		t.Visited[key] = true
 
-		// 1. 获取包围函数 (Enclosing Function) - 必须先获取，用于参数分析
-		funcName, funcLine, _, funcCol := t.GetEnclosingFunction(ref.Uri, callerLine)
-		if funcName == "" {
-			funcName = "Global/Anonymous"
-		}
+		// Use global semaphore only for resource limiting, not logic blocking
+		t.Sem <- struct{}{}
+		t.Wg.Add(1)
 
-		// 2. 分析调用点 (传入 funcName 以识别方法参数)
-		analysisData := AnalyzeCallSite(callerPath, callerLine, funcName)
+		go func(ref lsp.Location, callerPath string, callerLine int, parentVisited map[string]bool) {
+			defer func() {
+				<-t.Sem
+				t.Wg.Done()
+			}()
 
-		fmt.Printf("    [↑] Found caller: %s (in %s:%d)\n", funcName, filepath.Base(callerPath), callerLine+1)
+			// 1. 获取包围函数
+			funcName, funcLine, _, funcCol := t.GetEnclosingFunction(ref.Uri, callerLine)
+			if funcName == "" {
+				funcName = "Global/Anonymous"
+			}
 
-		newStep := model.ChainStep{
-			File:     callerPath,
-			Line:     callerLine,
-			Func:     funcName,
-			Code:     analysisData.Code,
-			Analysis: analysisData.DataFlow,
-		}
+			// 2. 分析调用点
+			analysisData := AnalyzeCallSite(callerPath, callerLine, funcName)
 
-		if funcLine > 0 {
-			t.TraceChain(callerPath, funcLine, funcCol, append(stack, newStep))
-		} else {
-			t.RecordResult(append(stack, newStep))
-		}
+			fmt.Printf("    [↑] Found caller: %s (in %s:%d)\n", funcName, filepath.Base(callerPath), callerLine+1)
+
+			newStep := model.ChainStep{
+				File:     callerPath,
+				Line:     callerLine,
+				Func:     funcName,
+				Code:     analysisData.Code,
+				Analysis: analysisData.DataFlow,
+			}
+
+			// Clone visited map for the new branch
+			newVisited := make(map[string]bool)
+			for k, v := range parentVisited {
+				newVisited[k] = v
+			}
+			newVisited[key] = true
+
+			if funcLine > 0 {
+				t.TraceChain(callerPath, funcLine, funcCol, append(stack, newStep), newVisited)
+			} else {
+				t.RecordResult(append(stack, newStep))
+			}
+		}(ref, callerPath, callerLine, visited)
 	}
 }
 
@@ -327,10 +360,12 @@ func (t *Tracer) RecordResult(stack []model.ChainStep) {
 	}
 
 	// 1. Valid Chain found. Store a COPY of the stack to prevent aliasing issues
-	// because the underlying array might be modified by the caller's loop.
 	finalStack := make([]model.ChainStep, len(stack))
 	copy(finalStack, stack)
+
+	t.mu.Lock()
 	t.Results = append(t.Results, finalStack)
+	t.mu.Unlock()
 
 	// 2. 准备颜色工具
 	boldRed := color.New(color.FgRed, color.Bold).SprintFunc()

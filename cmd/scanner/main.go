@@ -287,7 +287,7 @@ func main() {
 				Code: realCode,
 			}
 
-			tracer.TraceChain(anchorFile, funcLine, funcCol, []model.ChainStep{firstStep})
+			tracer.TraceChain(anchorFile, funcLine, funcCol, []model.ChainStep{firstStep}, make(map[string]bool))
 		} else {
 			color.Red("[-] Could not find function context. Is the line number correct?")
 		}

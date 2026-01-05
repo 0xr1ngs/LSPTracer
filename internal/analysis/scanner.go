@@ -55,7 +55,6 @@ func (t *Tracer) ScanAndTrace(rules []model.SinkRule) {
 			color.Red("[+] Confirmed Sink: %s", strings.TrimSpace(cand.Code))
 			fmt.Printf("    File: %s:%d\n", filepath.Base(cand.File), cand.Line+1)
 
-			t.Visited = make(map[string]bool)
 			t.ReportedEntry = make(map[string]bool)
 
 			firstStep := model.ChainStep{
@@ -75,7 +74,21 @@ func (t *Tracer) ScanAndTrace(rules []model.SinkRule) {
 
 			if funcName != "" {
 				firstStep.Func = funcName
-				t.TraceChain(cand.File, fLine, fCol, []model.ChainStep{firstStep})
+
+				// Acquire semaphore slot
+				t.Sem <- struct{}{}
+				t.Wg.Add(1)
+
+				go func(file string, line, col int, stack []model.ChainStep) {
+					defer func() {
+						<-t.Sem
+						t.Wg.Done()
+					}()
+					// Initialize per-chain visited map
+					initialVisited := make(map[string]bool)
+					t.TraceChain(file, line, col, stack, initialVisited)
+				}(cand.File, fLine, fCol, []model.ChainStep{firstStep})
+
 			} else {
 				// FIX: Route through RecordResult to enforce Strict Mode check
 				// (Previously: t.Results = append(t.Results, []model.ChainStep{firstStep}))
@@ -84,6 +97,10 @@ func (t *Tracer) ScanAndTrace(rules []model.SinkRule) {
 			}
 		}
 	}
+
+	// Wait for all trace chains to complete
+	color.Cyan("[*] Waiting for all trace chains to complete...")
+	t.Wg.Wait()
 	fmt.Println()
 
 	if realSinks == 0 {
