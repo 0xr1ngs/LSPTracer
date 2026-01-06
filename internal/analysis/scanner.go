@@ -198,12 +198,48 @@ func (t *Tracer) verifySink(cand candidate) bool {
 		return true
 	}
 
-	// 3. Self-Reference Check (LSP failed to resolve and points to source file)
-	// If the definition points back to the scanning file, usually means "Unknown Symbol".
-	// We handle this as "Verified" (pass) and let Heuristic Check decide.
-	if strings.Contains(resStr, filepath.Base(cand.File)) {
+	// 3. Fallback: Import Verification (Heuristic)
+	// If LSP failed (e.g. source-only mode), we check if the file IMPORTS the target class.
+	// Only if the class is imported do we consider it a potential match.
+	if t.hasImport(cand.File, cand.Rule.ClassName) {
 		return true
 	}
 
+	return false
+}
+
+// hasImport checks if a Java file imports a specific class
+func (t *Tracer) hasImport(file string, className string) bool {
+	f, err := os.Open(file)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	pkgParts := strings.Split(className, ".")
+	if len(pkgParts) < 2 {
+		return false
+	}
+	// e.g., org.apache.http.client.HttpClient -> package: org.apache.http.client
+	packageName := strings.Join(pkgParts[:len(pkgParts)-1], ".")
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "import ") {
+			// 1. Exact Import: import org.apache.http.client.HttpClient;
+			if strings.Contains(line, className) {
+				return true
+			}
+			// 2. Star Import: import org.apache.http.client.*;
+			if strings.Contains(line, packageName+".*") {
+				return true
+			}
+		}
+		// Stop scanning at class definition (optimization)
+		if strings.Contains(line, "class ") || strings.Contains(line, "interface ") {
+			break
+		}
+	}
 	return false
 }
