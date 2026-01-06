@@ -293,16 +293,8 @@ func (t *Tracer) TraceChain(file string, line, col int, stack []model.ChainStep,
 			continue
 		}
 
-		// Use global semaphore only for resource limiting, not logic blocking
-		t.Sem <- struct{}{}
-		t.Wg.Add(1)
-
-		go func(ref lsp.Location, callerPath string, callerLine int, parentVisited map[string]bool) {
-			defer func() {
-				<-t.Sem
-				t.Wg.Done()
-			}()
-
+		// Define the trace task logic
+		traceTask := func(ref lsp.Location, callerPath string, callerLine int, parentVisited map[string]bool) {
 			// 1. 获取包围函数
 			funcName, funcLine, _, funcCol := t.GetEnclosingFunction(ref.Uri, callerLine)
 			if funcName == "" {
@@ -334,7 +326,25 @@ func (t *Tracer) TraceChain(file string, line, col int, stack []model.ChainStep,
 			} else {
 				t.RecordResult(append(stack, newStep))
 			}
-		}(ref, callerPath, callerLine, visited)
+		}
+
+		// Try to acquire semaphore (Non-Blocking)
+		select {
+		case t.Sem <- struct{}{}:
+			// Acquired successfully -> Run in new Goroutine
+			t.Wg.Add(1)
+			go func(r lsp.Location, cp string, cl int, pv map[string]bool) {
+				defer func() {
+					<-t.Sem
+					t.Wg.Done()
+				}()
+				traceTask(r, cp, cl, pv)
+			}(ref, callerPath, callerLine, visited)
+		default:
+			// Semaphore full -> Run Synchronously (Caller Runs Policy)
+			// This prevents deadlock by falling back to serial execution when saturated
+			traceTask(ref, callerPath, callerLine, visited)
+		}
 	}
 }
 
