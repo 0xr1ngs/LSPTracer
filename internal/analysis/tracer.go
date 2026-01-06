@@ -187,53 +187,67 @@ func (t *Tracer) GetEnclosingFunction(uri string, line int) (string, int, int, i
 }
 
 func (t *Tracer) isFrameworkEntry(file string, line int) bool {
+	// 1. Find Enclosing Function Line first
+	// We need to know where the method STARTS to check annotations above it.
+	funcName, funcStartLine, _, _ := t.GetEnclosingFunction(lsp.ToUri(file), line)
+	if funcName == "" {
+		// Fallback: If LSP fails, maybe checking valid annotations around 'line' is okay?
+		// No, usually dangerous. Let's assume false to encourage tracing up.
+		return false
+	}
+
 	f, err := os.Open(file)
 	if err != nil {
 		return false
 	}
 	defer f.Close()
 
-	// Scan from the beginning of the file to catch Class-level annotations (e.g. @Controller)
-	// and Method definitions that might be far above the sink.
-	startScanLine := 0
+	// 2. Scan lines [funcStartLine - 15, funcStartLine]
+	// We only care about annotations attached to THIS method.
+	startScan := funcStartLine - 15
+	if startScan < 0 {
+		startScan = 0
+	}
 
 	scanner := bufio.NewScanner(f)
 	currLine := 0
 
 	entryAnnotations := []string{
-		// 1. Web MVC / REST (Spring Boot)
+		// Spring Web
 		"@RequestMapping", "@GetMapping", "@PostMapping", "@PutMapping", "@DeleteMapping", "@PatchMapping",
-		"@Controller", "@RestController",
-
-		// 2. Standard Java EE / Jakarta EE Web
+		// Spring Listeners
+		"@RabbitListener", "@KafkaListener", "@JmsListener", "@Scheduled",
+		// Java EE / Servlet
 		"@WebFilter", "@WebServlet",
-		"implements Filter", "extends HttpServlet", "extends GenericServlet",
-
-		// 3. Messaging (External Inputs)
-		"@RabbitListener", "@KafkaListener", "@JmsListener",
-
-		// REMOVED: @Component, @Service, @Repository (Too broad, internal structure)
-		// REMOVED: @PostConstruct, @Scheduled (Internal lifecycle/timers, not external input)
 	}
 
 	for scanner.Scan() {
-		if currLine >= startScanLine && currLine <= line {
+		// Only check lines in the window
+		if currLine >= startScan && currLine <= funcStartLine {
 			text := strings.TrimSpace(scanner.Text())
+
+			// Skip comments
 			if strings.HasPrefix(text, "//") || strings.HasPrefix(text, "*") {
 				currLine++
 				continue
 			}
+
+			// Check Annotations
 			for _, ann := range entryAnnotations {
 				if strings.Contains(text, ann) {
 					return true
 				}
 			}
+
+			// Special: Servlet Inheritance logic (if needed, relies on class-level check which is harder here)
+			// For now, assume Annotations cover 99% of cases in modern frameworks.
 		}
-		if currLine > line {
+		if currLine > funcStartLine {
 			break
 		}
 		currLine++
 	}
+
 	return false
 }
 
