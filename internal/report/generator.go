@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -266,27 +267,30 @@ func getSmartCodeContext(path string, targetLine int, funcName string) string {
 	totalLines := len(lines)
 
 	// 1. 尝试智能查找函数边界
-	startLine := findFunctionStart(lines, targetLine, funcName)
+	// Step A: Find the line where the function is defined (e.g., "public void foo(...)")
+	defLine := findFunctionDefLine(lines, targetLine, funcName)
+	startLine := -1
 	endLine := -1
 
-	if startLine != -1 {
-		// 如果找到了函数头，尝试找到函数尾 (花括号平衡)
-		endLine = findFunctionEnd(lines, startLine)
+	if defLine != -1 {
+		// Step B: Scan upwards for annotations (e.g. @RequestMapping)
+		startLine = scanUpForAnnotations(lines, defLine)
+
+		// Step C: Scan downwards for the closing brace, starting from the DEFINITION line
+		// (Avoids confusing braces inside annotations)
+		endLine = findFunctionEnd(lines, defLine)
 	}
 
 	// Double Check: Ensure the Found Range covers the Target Line
 	if startLine != -1 && endLine != -1 {
 		if targetLine < startLine || targetLine > endLine {
 			// The found function definition is NOT enclosing the target line.
-			// This happens if we matched a wrong method name or an inner class method that ends before our line.
-			// Discard and fallback to default window.
 			startLine = -1
 			endLine = -1
 		}
 	}
 
-	// 2. 兜底策略：如果没找到完整的函数块，或者提取失败，使用固定窗口
-	// (避免之前 findFunctionEnd 从中间开始导致只提取了内部 if 块的问题)
+	// 2. 兜底策略：如果没找到，使用固定窗口
 	if startLine == -1 || endLine == -1 {
 		startLine = targetLine - 20
 		if startLine < 0 {
@@ -297,7 +301,7 @@ func getSmartCodeContext(path string, targetLine int, funcName string) string {
 			endLine = totalLines - 1
 		}
 	} else {
-		// 如果找到了，也做一下长度防御，防止文件过大
+		// 长度防御
 		if endLine > totalLines-1 {
 			endLine = totalLines - 1
 		}
@@ -326,52 +330,105 @@ func getSmartCodeContext(path string, targetLine int, funcName string) string {
 	return sb.String()
 }
 
-// 向上查找
-func findFunctionStart(lines []string, targetIdx int, funcName string) int {
+// 向上查找函数定义行 (不包含注解扫描，仅定位 public void xxx 部分)
+func findFunctionDefLine(lines []string, targetIdx int, funcName string) int {
 	// 如果 funcName 包含参数 (e.g. "query(String)"), 截取括号前的内容
 	if idx := strings.Index(funcName, "("); idx != -1 {
 		funcName = funcName[:idx]
 	}
-	for i := targetIdx; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
 
-		// 1. 必须包含函数名和左括号
-		idx := strings.Index(line, funcName)
-		if idx == -1 || !strings.Contains(line, "(") {
+	// 使用正则进行精确的全词匹配 (Word Boundary)
+	safePattern := regexp.QuoteMeta(funcName)
+	pattern := fmt.Sprintf(`\b%s\b`, safePattern)
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return -1
+	}
+
+	for i := targetIdx; i >= 0; i-- {
+		rawLine := lines[i]
+		line := strings.TrimSpace(rawLine)
+
+		if len(line) == 0 {
 			continue
 		}
 
-		// 1.1 Strict Word Boundary Check (Left)
-		// 防止匹配 substring (e.g. searching "Print" but matched "fingerPrint")
-		if idx > 0 {
-			prevChar := line[idx-1]
-			if isAlphaNum(prevChar) {
-				continue
+		// 1. 忽略注释行
+		if strings.HasPrefix(line, "//") || strings.HasPrefix(line, "*") || strings.HasPrefix(line, "/*") {
+			continue
+		}
+
+		// 2. ✨✨✨ Mask Strings to avoid matching function names inside quotes (e.g. @RequestMapping("/call")) ✨✨✨
+		maskedLine := maskStrings(line)
+
+		// Check keywords on the MASKED line (safer)
+		ignoredKeywords := []string{"return", "if", "else", "for", "while", "do", "switch", "case", "catch", "try", "throw", "new"}
+		isKeyword := false
+		for _, kw := range ignoredKeywords {
+			// Check prefix on masked line to ensure we don't match "returnVal" as "return"
+			// But maskedLine has replaced strings with spaces.
+			// We can just check regex \bkeyword\b or HasPrefix with space check.
+			if strings.HasPrefix(maskedLine, kw) {
+				if len(maskedLine) == len(kw) || !isAlphaNum(maskedLine[len(kw)]) {
+					isKeyword = true
+					break
+				}
 			}
 		}
-
-		// 2. heuristic: 如果行尾是分号，通常是调用语句，不是定义
-		// 注意：如果不写分号的语言(Kotlin/Scala)这可能不适用，但针对 Java 比较准确
-		if strings.HasSuffix(line, ";") {
+		if isKeyword {
 			continue
 		}
 
-		// 3. heuristic: 如果函数名前面是点 (e.g. obj.method(...)), 认为是调用
-		// 3. heuristic: 如果函数名前面是点 (e.g. obj.method(...)), 认为是调用
-		// idx matches from above
-
-		if idx > 0 && line[idx-1] == '.' {
+		// 3. 快速过滤: 必须包含 "(" (Check in MASKED line to avoid "(" inside string)
+		if !strings.Contains(maskedLine, "(") {
 			continue
 		}
 
-		// 4. heuristic: 排除 new ClassName(...) 的情况 (构造函数调用)
-		if strings.Contains(line, "new "+funcName) {
+		// 4. 正则查找位置 (在 MASKED line 上查找，避开字符串内的匹配)
+		loc := re.FindStringIndex(maskedLine)
+		if loc == nil {
+			continue
+		}
+		idx := loc[0]
+
+		// 5. heuristic: 如果函数名前面是点 (e.g. obj.method(...))
+		if idx > 0 && maskedLine[idx-1] == '.' {
 			continue
 		}
 
-		return scanUpForAnnotations(lines, i)
+		// 6. heuristic: 如果行尾是分号
+		if strings.HasSuffix(strings.TrimSpace(maskedLine), ";") {
+			continue
+		}
+
+		return i // Found the definition line!
 	}
 	return -1
+}
+
+// 辅助：将字符串内容屏蔽为空格，保持长度不变
+func maskStrings(code string) string {
+	var buf bytes.Buffer
+	inString := false
+	for i := 0; i < len(code); i++ {
+		c := code[i]
+		if c == '"' {
+			if i > 0 && code[i-1] == '\\' {
+				// 转义引号，保留原样或替换为空格 (替换为空格更安全)
+				buf.WriteByte(' ')
+			} else {
+				inString = !inString
+				buf.WriteByte('"')
+			}
+		} else {
+			if inString {
+				buf.WriteByte(' ')
+			} else {
+				buf.WriteByte(c)
+			}
+		}
+	}
+	return buf.String()
 }
 
 func scanUpForAnnotations(lines []string, funcDefLine int) int {
