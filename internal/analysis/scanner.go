@@ -176,35 +176,56 @@ func (t *Tracer) verifySink(cand candidate) bool {
 		"position":     lsp.Position{Line: cand.Line, Character: cand.Col + 1},
 	})
 
-	// 增加超时时间到 3秒，减少因索引未完成导致的 False Negative
+	// Wait for result with timeout
 	res, err := t.Client.WaitForResult(id, 3*time.Second)
 
-	// Revert Strict Mode: 如果 LSP 失败或超时，由于我们处于无依赖环境，
-	// 默认认为可能是 Sink (Loose Mode) 以防漏报。
-	// 但我们会随后用 heuristic check 来剔除明显的误报。
-	if err != nil || res == nil || strings.TrimSpace(string(res)) == "[]" {
-		return true
+	// 1. LSP Resolution Logic
+	if err == nil && res != nil && strings.TrimSpace(string(res)) != "[]" {
+		resStr := string(res)
+
+		// Normalize class name for matching (e.g. java.lang.Runtime -> java/lang/Runtime)
+		targetPath := strings.ReplaceAll(cand.Rule.ClassName, ".", "/")
+		shortName := cand.Rule.ClassName
+		if idx := strings.LastIndex(shortName, "."); idx != -1 {
+			shortName = shortName[idx+1:]
+		}
+
+		// A. Strong Positive: LSP points to the correct library class file
+		if strings.Contains(resStr, targetPath) || strings.Contains(resStr, shortName) {
+			return true
+		}
+
+		// B. Strong Negative: LSP points to a DIFFERENT library class file (e.g. jdt://.../WrongClass.class)
+		// If it's a binary file (.class) or in a JAR/JDT scheme, and didn't match above, it's definitely not our target.
+		if strings.Contains(resStr, ".class") || strings.Contains(resStr, "jdt:") || strings.Contains(resStr, "jar:") {
+			return false
+		}
+
+		// C. Ambiguous: LSP points to a local source file (file://.../MyFile.java)
+		// This happens in source-only mode when LSP resolves to the variable definition (e.g. "private RestTemplate rt;")
+		// instead of the method definition because libraries are missing.
+		// In this case, we fall through to the Import Check.
 	}
 
-	resStr := string(res)
-
-	targetPath := strings.ReplaceAll(cand.Rule.ClassName, ".", "/")
-	shortName := cand.Rule.ClassName
-	if idx := strings.LastIndex(shortName, "."); idx != -1 {
-		shortName = shortName[idx+1:]
-	}
-
-	if strings.Contains(resStr, targetPath) || strings.Contains(resStr, shortName) {
-		return true
-	}
-
-	// 3. Fallback: Import Verification (Heuristic)
-	// If LSP failed (e.g. source-only mode), we check if the file IMPORTS the target class.
-	// Only if the class is imported do we consider it a potential match.
+	// 2. Fallback: Strict Import Verification
+	// Used when:
+	// - LSP failed/timeout/empty
+	// - LSP returned a local file reference (Ambiguous)
 	if t.hasImport(cand.File, cand.Rule.ClassName) {
 		return true
+	} else {
+		if strings.Contains(cand.File, "OpenApiController.java") {
+			fmt.Printf("[DEBUG] Import Mismatch for OpenApiController. Class: %s\n", cand.Rule.ClassName)
+		}
 	}
 
+	// 3. Catch-all for fully qualified names in code (e.g. java.lang.Runtime.getRuntime().exec())
+	// If the code explicitly uses the full class name, hasImport might say no, but it's valid.
+	if strings.Contains(cand.Code, cand.Rule.ClassName) {
+		return true
+	}
+
+	// Default to False if neither LSP validated it nor Imports matched it.
 	return false
 }
 
