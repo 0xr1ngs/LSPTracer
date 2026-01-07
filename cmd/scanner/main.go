@@ -26,7 +26,6 @@ var (
 	argFile      = flag.String("file", "", "(Optional) Target file path with line number (e.g., src/Main.java:42). If empty, auto-scan mode is enabled.")
 	argJdtlsHome = flag.String("jdtls", "", "Path to JDT.LS directory. If empty, it will be auto-downloaded.")
 	argRules     = flag.String("rules", "", "(Optional) Path to external rules.yaml file.")
-	argStrict    = flag.Bool("strict", false, "Enable strict source validation (only report chains starting at framework entry points)")
 )
 
 // 自动读取文件指定行的代码
@@ -235,8 +234,8 @@ func main() {
 
 	// 7. 启动追踪器
 	tracer := analysis.NewTracer(client, realWorkspaceRoot)
-	tracer.StrictMode = *argStrict
-	tracer.Start(anchorFile) // 发送 didOpen 信号激活 LSP
+	tracer.StrictMode = autoScanMode // Auto-Scan = Strict Mode; Single File = Loose Mode
+	tracer.Start(anchorFile)         // 发送 didOpen 信号激活 LSP
 
 	// 8. 根据模式执行扫描
 	if autoScanMode {
