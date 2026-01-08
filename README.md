@@ -10,7 +10,6 @@ LSPTracer 利用标准的语言服务器（如 **Eclipse JDT.LS**），能够像
 ## ✨ 核心特性
 
 - **🚀 高精度分析**: 利用 IDE 级别的 LSP 协议精准解析方法调用、类继承和变量引用。
-- **🛡️ 严格模式 (Strict Mode)**: 智能源过滤机制，仅报告源自有效框架入口点（如 `@RestController`, `@WebFilter`, `HttpServlet`）的漏洞链，极大降低误报噪音。
 - **🧩 智能追踪**: 自动从 Sink（危险函数）反向追踪数据流至 Source（用户输入），生成完整的漏洞调用链。
 - **🎨 可视化报告**: 生成精美的交互式 HTML 报告，包含完整代码片段、变量定义回溯和调用栈信息。
 - **⚙️ 零配置启动**: 自动下载 JDT.LS，自动探测项目根目录，自动配置环境，开箱即用。
@@ -42,15 +41,7 @@ go build -o lsptracer cmd/scanner/main.go
 ./lsptracer -project /path/to/your/java/project
 ```
 
-### 2. 严格模式 (推荐)
-
-启用 **Strict Mode** 以过滤“孤儿”链。该模式确保报告的漏洞都源自可信的外部入口（如 Controller, Filter, Listener），忽略那些无法从外部直接访问的内部工具类方法。
-
-```bash
-./lsptracer -project /path/to/your/java/project -strict
-```
-
-### 3. 指定自定义规则
+### 2. 指定自定义规则
 
 指定自定义规则文件（格式参考 `rules.yaml`）。
 
@@ -58,7 +49,7 @@ go build -o lsptracer cmd/scanner/main.go
 ./lsptracer -project /path/to/project -rules my-rules.yaml
 ```
 
-### 4. 单点狙击模式 (Sink 验证)
+### 3. 单点狙击模式 (Sink 验证)
 
 针对特定文件和行号进行分析，用于快速验证某个 Sink 点是否可达。
 
