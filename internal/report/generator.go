@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,13 +19,26 @@ import (
 // Vulnerability 结构体
 type Vulnerability struct {
 	ID    int
+	Title string // e.g. "RunTime.exec"
 	Steps []ReportStep
+}
+
+type NavItem struct {
+	ID    int
+	Title string
+}
+
+type NavGroup struct {
+	Name  string
+	Count int
+	Items []NavItem
 }
 
 type ReportData struct {
 	GeneratedAt string
 	TotalChains int
 	Vulns       []Vulnerability
+	NavGroups   []NavGroup
 }
 
 type ReportStep struct {
@@ -39,7 +53,8 @@ type ReportStep struct {
 	Analysis  []string
 }
 
-// HTML 模板 (包含了你的 View Full Context 样式)
+// HTML 模板 (包含了 Sidebar 和 View Full Context 样式)
+// Modified to have a sidebar layout
 const htmlTemplateStr = `
 <!DOCTYPE html>
 <html lang="en">
@@ -48,16 +63,165 @@ const htmlTemplateStr = `
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LSPTracer Scan Report</title>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f0f2f5; color: #333; margin: 0; padding: 20px; }
-        .container { max-width: 1100px; margin: 0 auto; }
-        
-        .report-header { background: white; padding: 20px 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 30px; border-left: 5px solid #d32f2f; }
-        .report-header h1 { margin: 0; color: #2c3e50; font-size: 24px; }
-        .meta { color: #7f8c8d; font-size: 14px; margin-top: 5px; }
+        :root {
+            --sidebar-width: 280px;
+            --primary-color: #2c3e50;
+            --accent-color: #3498db;
+            --danger-color: #e74c3c;
+            --bg-color: #f4f7f6;
+            --card-bg: #ffffff;
+            --text-color: #333;
+            --text-light: #7f8c8d;
+        }
 
-        .vuln-card { background: white; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); margin-bottom: 40px; overflow: hidden; }
-        .vuln-title { background: #2c3e50; color: white; padding: 15px 20px; font-weight: bold; display: flex; justify-content: space-between; }
-        .chain-body { padding: 20px; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            background-color: var(--bg-color); 
+            color: var(--text-color); 
+            margin: 0; 
+            padding: 0; 
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Sidebar Styles */
+        .sidebar {
+            width: var(--sidebar-width);
+            background-color: #ffffff; /* Light background */
+            color: #24292f; /* Dark text */
+            display: flex;
+            flex-direction: column;
+            border-right: 1px solid #d0d7de;
+            flex-shrink: 0;
+            overflow-y: auto;
+        }
+
+        .sidebar-header {
+            padding: 20px;
+            background-color: #ffffff; /* Light background */
+            border-bottom: 1px solid #d0d7de;
+        }
+
+        .sidebar-header h1 {
+            margin: 0;
+            font-size: 20px;
+            font-weight: 600;
+            color: #1f2328; /* Dark heading */
+            display: flex;
+            align-items: center;
+        }
+
+        .sidebar-header .meta {
+            font-size: 14px; /* Increased from 12px */
+            color: #656d76; 
+            margin-top: 5px;
+            font-weight: 500;
+        }
+
+        .nav-section {
+            padding: 10px 0;
+        }
+
+        .nav-group-title {
+            padding: 10px 20px;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #1f2328; 
+            font-weight: bold;
+            opacity: 0.8;
+        }
+
+        .nav-item {
+            display: block;
+            padding: 10px 20px 10px 30px;
+            color: #1f2328; 
+            text-decoration: none;
+            font-size: 14px;
+            border-left: 4px solid transparent;
+            transition: background 0.2s, border-color 0.2s;
+            cursor: pointer;
+            font-weight: 500;
+        }
+
+        .nav-item:hover {
+            background-color: #f6f8fa; 
+            color: #24292f;
+        }
+
+        .nav-item.active {
+            background-color: #ddf4ff; 
+            border-left-color: #0969da; 
+            color: #0969da;
+            font-weight: 600;
+        }
+
+        .nav-item .id-badge {
+            background: #eaeef2; 
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+            margin-right: 8px;
+            color: #57606a; 
+            font-weight: 600;
+        }
+
+        /* Main Content Styles */
+        .main-content {
+            flex: 1;
+            padding: 30px 40px;
+            overflow-y: auto;
+            scroll-behavior: smooth;
+        }
+
+        .report-overview {
+            background: white;
+            padding: 20px 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            margin-bottom: 30px;
+            border-left: 5px solid var(--danger-color);
+        }
+
+        .vuln-card { 
+            background: var(--card-bg); 
+            border-radius: 8px; 
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05); 
+            margin-bottom: 40px; 
+            overflow: hidden; 
+            border: 1px solid #eee;
+            scroll-margin-top: 20px;
+        }
+
+        .vuln-title { 
+            background: #fff; 
+            border-bottom: 1px solid #eee;
+            color: var(--primary-color); 
+            padding: 15px 25px; 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center;
+        }
+
+        .vuln-title h2 {
+            margin: 0;
+            font-size: 18px;
+            display: flex;
+            align-items: center;
+        }
+        
+        .vuln-id-tag {
+            background: var(--primary-color);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 14px;
+            margin-right: 10px;
+            font-family: monospace;
+        }
+
+        .chain-body { padding: 25px; }
 
         .timeline { position: relative; padding-left: 20px; }
         .timeline::before { content: ''; position: absolute; left: 0; top: 10px; bottom: 0; width: 2px; background: #e0e0e0; }
@@ -65,32 +229,39 @@ const htmlTemplateStr = `
         .step { position: relative; margin-bottom: 30px; padding-left: 25px; }
         .step::before { content: ''; position: absolute; left: -26px; top: 0; width: 14px; height: 14px; border-radius: 50%; border: 3px solid white; box-shadow: 0 0 0 2px #e0e0e0; z-index: 1; }
         
-        .type-source::before { background: #d32f2f; box-shadow: 0 0 0 2px #d32f2f; }
-        .type-step::before { background: #fbc02d; box-shadow: 0 0 0 2px #fbc02d; }
-        .type-sink::before { background: #212121; box-shadow: 0 0 0 2px #212121; }
+        .type-source::before { background: #e74c3c; box-shadow: 0 0 0 2px #e74c3c; }
+        .type-step::before { background: #f39c12; box-shadow: 0 0 0 2px #f39c12; }
+        .type-sink::before { background: #2c3e50; box-shadow: 0 0 0 2px #2c3e50; }
 
         .step-header { display: flex; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
-        .tag { padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; margin-right: 10px; color: white; }
-        .tag-source { background: #d32f2f; }
-        .tag-step { background: #f9a825; }
-        .tag-sink { background: #212121; }
+        .tag { padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; margin-right: 10px; color: white; text-transform: uppercase;}
+        .tag-source { background: #e74c3c; }
+        .tag-step { background: #f39c12; }
+        .tag-sink { background: #2c3e50; }
         
-        .func-name { font-family: 'JetBrains Mono', Consolas, monospace; font-weight: bold; color: #000; font-size: 1.1em; }
-        .file-loc { font-size: 13px; color: #7f8c8d; margin-left: auto; font-family: monospace; }
+        .func-name { font-family: 'JetBrains Mono', Consolas, monospace; font-weight: bold; color: #2c3e50; font-size: 1.05em; }
+        .file-loc { font-size: 13px; color: #95a5a6; margin-left: auto; font-family: monospace; }
 
-        .code-box { background: #fafafa; border: 1px solid #eee; border-radius: 4px; padding: 10px; margin-top: 5px; }
-        .summary-code { font-family: 'JetBrains Mono', Consolas, monospace; font-size: 13px; color: #444; overflow-x: auto; white-space: pre-wrap; background: #fff; padding: 5px; border: 1px solid #eee; }
+        .code-box { background: #fafafa; border: 1px solid #eee; border-radius: 6px; padding: 12px; margin-top: 8px; }
+        .summary-code { font-family: 'JetBrains Mono', Consolas, monospace; font-size: 13px; color: #444; overflow-x: auto; white-space: pre-wrap; background: #fff; padding: 8px; border: 1px solid #eee; border-radius: 4px; border-left: 3px solid #ddd; }
         
-        .analysis-item { margin-top: 5px; font-size: 13px; color: #555; }
+        .analysis-item { margin-top: 8px; font-size: 13px; color: #555; display: flex; align-items: start;}
+        .analysis-item span { margin-right: 5px; }
 
-        .toggle-btn { background: none; border: none; color: #3498db; cursor: pointer; font-size: 12px; padding: 0; margin-top: 8px; text-decoration: underline; }
-        .toggle-btn:hover { color: #2980b9; }
+        .toggle-btn { 
+            background: none; border: none; color: var(--accent-color); cursor: pointer; font-size: 12px; 
+            padding: 5px 0; margin-top: 5px; text-decoration: none; display: inline-flex; align-items: center;
+            font-weight: 600;
+        }
+        .toggle-btn:hover { text-decoration: underline; }
+        .toggle-btn::after { content: ' ▼'; font-size: 10px; margin-left: 4px; }
+        .toggle-btn.active::after { content: ' ▲'; }
 
-        .full-code-context { display: none; margin-top: 10px; background: #282c34; padding: 10px; border-radius: 4px; font-family: 'JetBrains Mono', Consolas, monospace; font-size: 12px; line-height: 1.6; color: #abb2bf; overflow-x: auto; }
+        .full-code-context { display: none; margin-top: 10px; background: #282c34; padding: 15px; border-radius: 6px; font-family: 'JetBrains Mono', Consolas, monospace; font-size: 12px; line-height: 1.6; color: #abb2bf; overflow-x: auto; border: 1px solid #1e222a; }
         .code-line { display: block; white-space: pre; }
-        .line-num { color: #5c6370; margin-right: 15px; user-select: none; display: inline-block; width: 35px; text-align: right; border-right: 1px solid #3e4451; padding-right: 5px;}
+        .line-num { color: #5c6370; margin-right: 15px; user-select: none; display: inline-block; width: 35px; text-align: right; border-right: 1px solid #3e4451; padding-right: 8px;}
         
-        .highlight-line { background-color: #3e4451; display: block; width: 100%; }
+        .highlight-line { background-color: #3e4451; display: block; width: 100%; border-left: 3px solid #e5c07b; }
         .highlight-line .line-num { color: #e5c07b; font-weight: bold; }
 
         .s-kwd { color: #c678dd; font-weight: bold; } 
@@ -103,18 +274,41 @@ const htmlTemplateStr = `
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="report-header">
-            <h1>🔥 LSPTracer Security Report</h1>
-            <div class="meta">Generated at: {{.GeneratedAt}} | Total Chains Found: <strong>{{.TotalChains}}</strong></div>
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <h1>⚡ LSPTracer</h1>
+            <div class="meta" style="font-size: 13px; font-weight: 600; color: #1f2328; margin-top: 8px;">Scan Report</div>
+            <div class="meta" style="margin-top: 8px; opacity: 0.8; font-size: 14px;">
+                TOTAL CHAINS: {{.TotalChains}}<br>
+                <span style="font-size: 12px; opacity: 0.7; font-weight: 400">{{.GeneratedAt}}</span>
+            </div>
+        </div>
+        <div class="nav-section">
+            {{range .NavGroups}}
+            <div class="nav-group-title">{{.Name}} ({{.Count}})</div>
+            {{range .Items}}
+            <a href="#vuln-{{.ID}}" class="nav-item" onclick="setActive(this)">
+                <span class="id-badge">#{{.ID}}</span>
+                {{.Title}}
+            </a>
+            {{end}}
+            {{end}}
+        </div>
+    </div>
+
+    <div class="main-content">
+        <div class="report-overview">
+            <h2 style="margin-top: 0; color: #2c3e50;">Scan Overview</h2>
+            <p>Total confirmed vulnerability chains: <strong>{{.TotalChains}}</strong></p>
+            <p style="color: #666; font-size: 14px;">Select a vulnerability from the sidebar to view detailed trace information.</p>
         </div>
 
         {{range .Vulns}}
         {{ $vulnID := .ID }}
-        <div class="vuln-card">
+        <div id="vuln-{{.ID}}" class="vuln-card">
             <div class="vuln-title">
-                <span>Vulnerability Chain #{{.ID}}</span>
-                <span style="font-size: 0.8em; opacity: 0.8;">Depth: {{len .Steps}}</span>
+                <h2><span class="vuln-id-tag">#{{.ID}}</span> {{.Title}}</h2>
+                <span style="font-size: 0.9em; color: #7f8c8d; font-weight: normal;">Depth: {{len .Steps}} steps</span>
             </div>
             <div class="chain-body">
                 <div class="timeline">
@@ -135,7 +329,7 @@ const htmlTemplateStr = `
                                 <div class="analysis-item">{{.}}</div>
                             {{end}}
 
-                            <button class="toggle-btn" onclick="toggleCode('code-{{$vulnID}}-{{.Index}}')">View Full Context</button>
+                            <button class="toggle-btn" onclick="toggleCode('code-{{$vulnID}}-{{.Index}}', this)">View Full Context</button>
                             
                             <div id="code-{{$vulnID}}-{{.Index}}" class="full-code-context">
                                 {{.FullCode}}
@@ -147,16 +341,35 @@ const htmlTemplateStr = `
             </div>
         </div>
         {{end}}
-
     </div>
 
     <script>
-        function toggleCode(id) {
+        function toggleCode(id, btn) {
             var el = document.getElementById(id);
             if (el.style.display === "block") {
                 el.style.display = "none";
+                btn.classList.remove('active');
+                btn.innerHTML = "View Full Context";
             } else {
                 el.style.display = "block";
+                btn.classList.add('active');
+                btn.innerHTML = "Hide Context";
+            }
+        }
+
+        function setActive(el) {
+            document.querySelectorAll('.nav-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            el.classList.add('active');
+        }
+
+        // Auto-select first item on load if exists
+        window.onload = function() {
+            if(window.location.hash) {
+                const id = window.location.hash.substring(1); // remove #
+                const el = document.querySelector('a[href="#' + id + '"]');
+                if(el) setActive(el);
             }
         }
     </script>
@@ -171,10 +384,15 @@ func GenerateHTML(allChains [][]model.ChainStep, projectRoot string) {
 	}
 
 	var vulns []Vulnerability
+	// Helper map to group vulns by type
+	vulnGroups := make(map[string][]NavItem)
 
 	for chainIdx, stack := range allChains {
 		var steps []ReportStep
 		chainLen := len(stack)
+
+		vulnTitle := "Unknown Vulnerability"
+		vulnType := "Uncategorized"
 
 		for i := chainLen - 1; i >= 0; i-- {
 			step := stack[i]
@@ -184,12 +402,34 @@ func GenerateHTML(allChains [][]model.ChainStep, projectRoot string) {
 			if i == chainLen-1 {
 				stepType = "SOURCE"
 				typeClass = "source"
-			} else if i == 0 {
+			} else if i == 0 { // This is SINK
 				stepType = "SINK"
 				typeClass = "sink"
 			}
 
-			// ✨✨✨ 使用绝对路径读取代码 (step.File 现在是绝对路径) ✨✨✨
+			if i == 0 {
+				// Extract vulnerability type from Analysis if available
+				// e.g., "🚨 Matched Rule: RCE"
+				for _, analysisStr := range step.Analysis {
+					if strings.Contains(analysisStr, "Matched Rule") {
+						parts := strings.Split(analysisStr, ":")
+						if len(parts) > 1 {
+							ruleName := strings.TrimSpace(parts[1])
+							// Group by broad category (e.g. "SSRF")
+							if bracketIdx := strings.Index(ruleName, "("); bracketIdx != -1 {
+								vulnType = strings.TrimSpace(ruleName[:bracketIdx])
+							} else {
+								vulnType = ruleName
+							}
+						}
+					}
+				}
+
+				// Use Sink Function as Title or part of it
+				vulnTitle = fmt.Sprintf("%s", step.Func)
+			}
+
+			// ✨✨✨ 使用绝对路径读取代码 ✨✨✨
 			fullCodeHTML := getSmartCodeContext(step.File, step.Line, step.Func)
 
 			// ✨✨✨ 计算相对路径用于 HTML 展示 ✨✨✨
@@ -203,7 +443,7 @@ func GenerateHTML(allChains [][]model.ChainStep, projectRoot string) {
 				Type:      stepType,
 				TypeClass: typeClass,
 				Func:      step.Func,
-				File:      displayPath, // 展示给用户看的是相对路径
+				File:      displayPath,
 				Line:      step.Line + 1,
 				Code:      step.Code,
 				FullCode:  template.HTML(fullCodeHTML),
@@ -211,9 +451,39 @@ func GenerateHTML(allChains [][]model.ChainStep, projectRoot string) {
 			})
 		}
 
+		// Add to main list
+		vulnID := chainIdx + 1
 		vulns = append(vulns, Vulnerability{
-			ID:    chainIdx + 1,
+			ID:    vulnID,
+			Title: vulnTitle, // Simplified Title
 			Steps: steps,
+		})
+
+		// Add to Group for Sidebar
+		vulnGroups[vulnType] = append(vulnGroups[vulnType], NavItem{
+			ID:    vulnID,
+			Title: truncateString(vulnTitle, 25),
+		})
+	}
+
+	// Convert map to sorted slice for consistent rendering
+	var navGroups []NavGroup
+	var keys []string
+	for k := range vulnGroups {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, k := range keys {
+		items := vulnGroups[k]
+		// Sort items by ID inside group
+		sort.Slice(items, func(i, j int) bool {
+			return items[i].ID < items[j].ID
+		})
+		navGroups = append(navGroups, NavGroup{
+			Name:  k,
+			Count: len(items),
+			Items: items,
 		})
 	}
 
@@ -221,6 +491,7 @@ func GenerateHTML(allChains [][]model.ChainStep, projectRoot string) {
 		GeneratedAt: time.Now().Format("2006-01-02 15:04:05"),
 		TotalChains: len(vulns),
 		Vulns:       vulns,
+		NavGroups:   navGroups,
 	}
 
 	t, err := template.New("report").Parse(htmlTemplateStr)
@@ -250,6 +521,13 @@ func GenerateHTML(allChains [][]model.ChainStep, projectRoot string) {
 
 	absReportPath, _ := filepath.Abs(filepath.Join(outputDir, fileName))
 	color.Green("[+] Report generated successfully: %s", absReportPath)
+}
+
+func truncateString(s string, max int) string {
+	if len(s) > max {
+		return s[:max] + "..."
+	}
+	return s
 }
 
 // -----------------------------------------------------------------------------
