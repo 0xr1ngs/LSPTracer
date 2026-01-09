@@ -287,6 +287,10 @@ func main() {
 			}
 
 			tracer.TraceChain(anchorFile, funcLine, funcCol, []model.ChainStep{firstStep}, make(map[string]bool))
+
+			// Wait for async trace tasks to complete
+			color.Cyan("[*] Waiting for trace chains to complete...")
+			tracer.Wg.Wait()
 		} else {
 			color.Red("[-] Could not find function context. Is the line number correct?")
 		}
