@@ -147,6 +147,10 @@ func (c *Client) handleNotification(msg JsonRpcMessage) {
 		if ok {
 			msgType, _ := paramsMap["type"].(string)
 			msgText, _ := paramsMap["message"].(string)
+			// 避免打印过长的状态信息，尤其是重复的 Refreshing
+			if len(msgText) > 100 {
+				msgText = msgText[:97] + "..."
+			}
 			fmt.Printf("\r\033[K    -> Server Status: %s - %s", msgType, msgText)
 
 			if msgType == "ServiceReady" {

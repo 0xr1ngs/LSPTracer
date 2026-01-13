@@ -58,6 +58,26 @@ go build -o lsptracer cmd/scanner/main.go
 ./lsptracer -project /path/to/project -file src/main/java/com/example/Vuln.java:42
 ```
 
+### 4. 扫描模式选择 (-mode)
+
+LSPTracer 提供两种扫描模式以平衡速度与精度：
+
+*   **轻量模式 (默认, `-mode light`)**:
+    *   **特点**: 启动较快，生成模拟配置。
+    *   **原理**: 自动生成模拟的 Eclipse 配置欺骗 JDT.LS，跳过全量 Maven/Gradle 构建。
+    *   **注意**: 仍可能触发少量 JDT.LS 内部组件或基础依赖的下载 (存入 `~/.m2/repository`)，但远少于精准模式。
+    *   **缺点**: 对于跨模块调用或复杂的依赖引用可能出现无法解析的情况。
+
+*   **精准模式 (`-mode precise`)**:
+    *   **特点**: 全量构建，扫描精度最高。
+    *   **原理**: 启用 JDT.LS 原生 Maven/Gradle 支持，解析并下载该项目的所有依赖。
+    *   **注意**: 首次运行时会自动下载项目所需的**所有**依赖 Jar 包到本地 Maven 仓库，耗时较长（视网络和依赖数量而定）。
+
+```bash
+# 启用精准模式
+./lsptracer -project /path/to/project -mode precise
+```
+
 ## 📝 配置规则 (rules.yaml)
 
 LSPTracer 使用 YAML 格式的规则引擎。您可以添加新的 Sink 定义或禁用现有规则。

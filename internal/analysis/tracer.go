@@ -28,9 +28,10 @@ type Tracer struct {
 	ReportedEntry map[string]bool
 	Results       [][]model.ChainStep
 	StrictMode    bool
+	ScanMode      string // "light" or "precise"
 }
 
-func NewTracer(client *lsp.Client, root string) *Tracer {
+func NewTracer(client *lsp.Client, root string, mode string) *Tracer {
 	return &Tracer{
 		Client:        client,
 		ProjectRoot:   root,
@@ -39,11 +40,12 @@ func NewTracer(client *lsp.Client, root string) *Tracer {
 		Results:       make([][]model.ChainStep, 0),
 		StrictMode:    false,
 		Sem:           make(chan struct{}, 20), // Limit to 20 concurrent tasks
+		ScanMode:      mode,
 	}
 }
 
 func (t *Tracer) Start(startFile string) {
-	color.Cyan("[*] Sending Initialize (Source-Only Mode)...")
+	color.Cyan("[*] Sending Initialize...")
 	rootUri := lsp.ToUri(t.ProjectRoot)
 
 	javaHome := os.Getenv("JAVA_HOME")
@@ -56,23 +58,36 @@ func (t *Tracer) Start(startFile string) {
 		javaHome = "."
 	}
 
+	// Configure JDT.LS Runtimes
+	// We map the same JAVA_HOME to multiple execution environments to ensure
+	// JDT.LS can pick it up regardless of what the project requests.
+	// Configure JDT.LS to use the host Java environment natively.
+	// We do NOT explicitly map "JavaSE-1.8" -> JDK22, because JDT.LS validation will fail.
+	// By omitting "runtimes", JDT.LS will fall back to the JDK it is running on (User's JDK).
 	javaSettings := map[string]interface{}{
 		"home": javaHome,
 		"errors": map[string]interface{}{
 			"incompleteClasspath": map[string]interface{}{"severity": "ignore"},
 		},
-		"configuration": map[string]interface{}{
-			"runtimes": []map[string]interface{}{
-				{"name": "JavaSE-1.8", "path": javaHome, "default": true},
-				{"name": "JavaSE-11", "path": javaHome, "default": true},
-				{"name": "JavaSE-17", "path": javaHome, "default": true},
+	}
+
+	// Configure Import Settings based on Mode
+	if t.ScanMode == "precise" {
+		javaSettings["import"] = map[string]interface{}{
+			"gradle": map[string]interface{}{"enabled": true},
+			"maven":  map[string]interface{}{"enabled": true},
+		}
+		color.Yellow("[*] Precise Mode: Enabled JDT.LS native Maven/Gradle import support.")
+	} else {
+		// Light Mode: Disable build tools and exclude them to speed up indexing
+		javaSettings["import"] = map[string]interface{}{
+			"gradle": map[string]interface{}{"enabled": false},
+			"maven":  map[string]interface{}{"enabled": false},
+			"exclusions": []string{
+				"**/pom.xml", "**/build.gradle", // Recursive
+				"pom.xml", "build.gradle", // Root level
 			},
-		},
-		"import": map[string]interface{}{
-			"gradle":     map[string]interface{}{"enabled": false},
-			"maven":      map[string]interface{}{"enabled": false},
-			"exclusions": []string{"**/pom.xml", "**/build.gradle"},
-		},
+		}
 	}
 
 	caps := map[string]interface{}{
@@ -247,18 +262,20 @@ func (t *Tracer) isFrameworkEntry(file string, line int) bool {
 		}
 		currLine++
 	}
-
 	return false
 }
 
 func (t *Tracer) TraceChain(file string, line, col int, stack []model.ChainStep, visited map[string]bool) {
+	// DEBUG
+	fmt.Printf("DEBUG: TraceChain called for %s:%d (stack: %d)\n", filepath.Base(file), line, len(stack))
+
 	if t.isFrameworkEntry(file, line) {
 		t.RecordResult(stack)
 		return
 	}
 
 	uri := lsp.ToUri(file)
-	maxRetries := 3
+	maxRetries := 20
 
 	var validRefs []lsp.Location
 
@@ -270,6 +287,9 @@ func (t *Tracer) TraceChain(file string, line, col int, stack []model.ChainStep,
 		})
 
 		raw, _ := t.Client.WaitForResult(id, 2*time.Second)
+		// DEBUG
+		// if len(raw) == 0 { fmt.Println("DEBUG: JDT.LS returned empty/null response") }
+
 		var refs []lsp.Location
 		json.Unmarshal(raw, &refs)
 
@@ -288,14 +308,18 @@ func (t *Tracer) TraceChain(file string, line, col int, stack []model.ChainStep,
 		if len(validRefs) > 0 {
 			break
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	if len(validRefs) == 0 {
+		fmt.Println("DEBUG: No refs found, calling RecordResult")
 		t.RecordResult(stack)
 		return
 	}
 
+	fmt.Printf("DEBUG: Found %d valid refs\n", len(validRefs))
+
+	foundValidCaller := false
 	for _, ref := range validRefs {
 		callerPath := lsp.FromUri(ref.Uri)
 		callerLine := ref.Range.Start.Line
@@ -306,6 +330,7 @@ func (t *Tracer) TraceChain(file string, line, col int, stack []model.ChainStep,
 		if visited[key] {
 			continue
 		}
+		foundValidCaller = true
 
 		// Define the trace task logic
 		traceTask := func(ref lsp.Location, callerPath string, callerLine int, parentVisited map[string]bool) {
@@ -360,9 +385,18 @@ func (t *Tracer) TraceChain(file string, line, col int, stack []model.ChainStep,
 			traceTask(ref, callerPath, callerLine, visited)
 		}
 	}
+
+	// PATCH: If we had validRefs but filtered them all out (e.g. visited),
+	// we still represent a valid chain end.
+	if !foundValidCaller {
+		t.RecordResult(stack)
+	}
 }
 
 func (t *Tracer) RecordResult(stack []model.ChainStep) {
+	// DEBUG
+	fmt.Printf("DEBUG: RecordResult called. Stacklen: %d, Strict: %v\n", len(stack), t.StrictMode)
+
 	// Strict Mode Check
 	if t.StrictMode && len(stack) > 0 {
 		sourceStep := stack[len(stack)-1]
